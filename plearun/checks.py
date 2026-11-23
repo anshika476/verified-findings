@@ -2,7 +2,7 @@
 
 Every comparison has a claim tolerance (tol) and an evidence uncertainty (u):
   match    if the evidence is inside tol even in the worst case: |d| + u <= tol
-  conflict if it is outside tol + a safety margin in the best case: |d| - u > tol + margin
+  conflict if it is outside tol even in the best case:  |d| - u > tol (+ margin, 0 for times)
   otherwise not settled.
 A conflict also needs the evidence to be attributable: e.g. a camera speed
 only counts when exactly one reading could be the vehicle in question.
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from .clocks import rss
 
 TIME_TOL = {"exact": 60.0, "approx": 120.0, "seconds": 30.0}
-TIME_MARGIN = 60.0
+TIME_MARGIN = 0.0      # clock errors here are < 1 min, so being outside tol is a real disagreement
 SPEED_TOL = {"exact": (1.0, 4.0), "approx": (3.0, 8.0)}     # (match within, conflict beyond)
 CITE_ORDER = {
     "CALL": ["dispatch", "notes"], "DISPATCHED": ["dispatch", "notes"],

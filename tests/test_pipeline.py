@@ -88,9 +88,13 @@ class Claims(Case):
     def test_wrong_stop_time_is_conflict(self):
         self.assertEqual(self.statuses(self.run_report("The driver stopped around 21:30.")), ["conflict"])
 
+    def test_three_minutes_off_is_a_conflict(self):
+        # 21:13 is 3 minutes from the 21:16 stop: outside "around" (±2 min) even allowing ±30 s
+        self.assertEqual(self.statuses(self.run_report("The driver stopped around 21:13.")), ["conflict"])
+
     def test_near_miss_is_not_a_conflict(self):
-        # 21:13 is 3 minutes from the 21:16 stop: outside "around", but not by a safe margin
-        self.assertEqual(self.statuses(self.run_report("The driver stopped around 21:13.")), ["not_settled"])
+        # 21:14 is 2 minutes from the stop: right on the edge of "around", so not decided
+        self.assertEqual(self.statuses(self.run_report("The driver stopped around 21:14.")), ["not_settled"])
 
     def test_wrong_gap_is_conflict(self):
         out = self.run_report("Dispatch records show a unit on scene roughly 9 minutes after the stop.")
