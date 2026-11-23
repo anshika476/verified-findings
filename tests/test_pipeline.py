@@ -54,6 +54,12 @@ class Sample(Case):
         self.assertEqual(out[2]["cite"], {"file": "dispatch.json", "row": 1})
         self.assertEqual(out[3]["cite"], {"file": "dispatch.json", "row": 2})
 
+    def test_committed_findings_json_is_current(self):
+        with redirect_stderr(io.StringIO()):
+            out = plearun_cli.run(SAMPLE_REPORT, SAMPLE_RECORDS)
+        with open(os.path.join(ROOT, "findings.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh), out, "run `make findings` to refresh findings.json")
+
     def test_every_quote_is_in_its_row_and_format_rules_hold(self):
         with redirect_stderr(io.StringIO()):
             out = plearun_cli.run(SAMPLE_REPORT, SAMPLE_RECORDS)["findings"]

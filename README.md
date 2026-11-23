@@ -1,32 +1,29 @@
 # Verified Findings
 
-`python3 plearun_cli.py REPORT RECORDS_DIR > findings.json` (add `--explain` to see offsets and reasoning on stderr). `make test` runs 43 offline tests. Standard library only, no network.
+`python3 plearun_cli.py REPORT RECORDS_DIR > findings.json` checks each report claim against the records. Add `--explain` to print clock offsets and reasoning to stderr. `make test` runs 44 offline tests, and `make findings` regenerates the sample output. It uses only the Python standard library: no network, no LLM.
 
 ## How it works
-1. **Load** (`plearun/records.py`) every `.csv/.json/.vtt` in the folder. Text is decoded as UTF-8 (BOM stripped), then Windows-1252, then Latin-1. `#` marker lines are skipped. Each row keeps its exact raw text. Row numbers: the CSV data row (after the header), the position in the JSON event list (D-1001 = 1), the VTT cue number.
-2. **Times** (`timeutil.py`): epoch ms, ISO with offset, naive datetimes and bare `21:15` are all read. A naive value takes the most common UTC offset in its file, then across all files. A bare time like `21:15` takes its date from the dated rows just above and below it in the same file. If those two dates differ (midnight falls between them), the time is not used. If the file has no dated rows (like the notes), the report's incident date is used. Each value carries its precision (±1 s, or ±30 s for minute-only values).
-3. **Clocks** (`clocks.py`): each device has its own clock (each camera ID, the dispatch file, the notes file, the transcript). The officer notes are the reference clock, since the report is written in the officer's time. Other clocks are aligned from *anchors*, meaning the same event in two sources: the 911 call, the stop (a 0 mph reading, "Stopped at lot", "Pulling in"), the first observation, arrival and dispatch. A clock is aligned only if it has ≥1 anchor (≥2 for the transcript, which has no absolute time), its anchors agree, and the offset is under 30 min. Otherwise it is left unaligned and not used for timing. The report is never used to estimate offsets.
-4. **Claims** (`claims.py`): one claim per report sentence (the header is skipped). Regexes pull out atoms: event times, gaps ("2 minutes after the stop"), speeds, posted limits and counts. A sentence with no atoms is `not_checkable`.
-5. **Decide** (`checks.py`): it is a **match** only if the claim is within tolerance even after adding the evidence's uncertainty. It is a **conflict** only if the claim is still outside tolerance after subtracting that uncertainty (no extra margin: the clock errors are under a minute, so being 3 minutes off is a real disagreement), every aligned source disagrees, and no unaligned source has the same event. A sentence is a conflict if any atom conflicts, and a match only if every checkable atom matches.
-6. **Verify**: before a finding is written, the cited file is re-read from disk and the quote must be an exact substring of that row. Otherwise the finding is downgraded to `not_settled`.
-
-**Sample offsets** (relative to the notes): dispatch +41 s, CAM-03 +42 s, CAM-07 −48 s, transcript cue 0 ≈ 21:15:26. With these, the 911 call lands on 21:11:00 and the unit arrives exactly 2:00 after the stop.
+1. **Load** every `.csv`, `.json` and `.vtt` file. It handles UTF-8 with a BOM, falls back to Windows-1252, and skips `#` marker lines. Each row keeps its exact raw text. A row is the CSV data row after the header, the JSON event's position in its list, or the VTT cue number.
+2. **Times:** reads epoch ms, ISO with offset, datetimes with no zone (which take their file's offset), and bare `21:15`. A bare time takes its date from the dated rows above and below it. If those dates differ, the time is not used. Each time carries its precision: ±1 s, or ±30 s for minute-only values.
+3. **Clocks:** each device (each camera, dispatch, the transcript) gets its own offset relative to the officer notes. Offsets come from events that appear in two sources, like the 911 call and the stop. A device is left unaligned if it has no shared event, if its events disagree, or if its offset is over 30 min. The report is never used to set offsets. On the sample: dispatch +41 s, CAM-03 +42 s, CAM-07 −48 s.
+4. **Claims:** one claim per sentence. It extracts times, gaps between events, speeds, limits and counts. A sentence with none of these is `not_checkable`.
+5. **Decide:** a **match** must hold even with the evidence's uncertainty added. A **conflict** must hold even with that uncertainty subtracted, from every aligned source, with no unaligned source holding the same event.
+6. **Verify:** the cited row is re-read from disk. If the quote is not an exact substring of it, the finding drops to `not_settled`.
 
 ## Three hardest decisions
-1. **Which camera reading is the sedan, and why the 58 mph claim is `not_settled`.** The cameras don't identify vehicles. A reading is treated as the sedan only if it is the only moving reading in the time window, or if it is *clearly* the closest: even in the worst case of clock error, it is at least 60 s nearer the claimed time than the next reading. Two readings on the same camera share one clock error, so their order is exact and that case is checked separately. In the sample, CAM-07's 58 mph reading is at about 21:06, so it's the wrong car. Near 21:14 the closest reading is 62 mph, but a 63 mph reading on the other camera is only about 78 s further away, which isn't clear once ±30 s per camera is allowed. Calling a conflict at 62 mph would risk the "confident wrong conflict" the brief warns about. The edge cases are tested (`ClosestReading` in the tests): busy roads, same-instant readings, duplicates, far decoys, readings at the window edge and unaligned cameras.
-2. **What counts as reliably aligned.** For an absolute clock I accept one unambiguous anchor, since the brief allows estimating from shared events. Every offset carries an uncertainty, and decisions must hold across that uncertainty. I also refuse a conflict when an unaligned source holds the same event, because evidence I couldn't place might support the claim.
-3. **Citation conventions.** For JSON the "row" is the event's position in the list, and the quote is the exact `"logged": …` text from that event's source span. Duplicate JSON keys are detected and that value is ignored.
+1. **Which camera reading is the sedan.** Cameras don't identify vehicles. A reading counts only if it is the only moving reading in the window, or clearly the closest: at least 60 s nearer than the next reading, even in the worst case of clock error. In the sample, 62 and 63 mph are too close to tell apart, so the 58 mph claim is `not_settled`. Calling a conflict there could be the confident wrong conflict the brief warns against.
+2. **When a clock is trusted.** One clear shared event is enough for dispatch or a camera. The transcript needs two, because it has no real clock. Conflicts are blocked when an unaligned source has the same event.
+3. **Conflict threshold.** There is no extra margin beyond tolerance plus uncertainty. The estimated clock errors are under a minute, so being 3 min off an "around" time counts as a real disagreement.
 
 ## What it gets wrong
-- **Circular checks.** Claims about anchor events (stop, call) partly check the reference source against itself, because the same events set the offsets.
-- **Minute precision.** The notes only record minutes, so every offset is ±30 s. Close calls end up `not_settled`.
-- **One verdict per sentence.** A sentence with one false part and one unverifiable part is reported as one finding.
-- **Keyword parsing.** Claims are found by keywords and regexes. Unusual wording ("the unit got there") is missed, and the sentence becomes `not_checkable`.
-- **Posted limits.** A limit is matched if every reading in the time window shows it. Which camera is at mile marker 4 is unknown.
+- Claims about the events used to set the offsets (stop, call) partly check the notes against themselves.
+- Minute-only notes give every offset ±30 s, so borderline claims stay `not_settled`.
+- It gives one verdict per sentence, and finds claims by keywords, so it misses wording like "got there".
+- The row numbering is my interpretation. If the graders count file lines instead, the citations would be off.
 
 ## What breaks first on real records
-Claim extraction from free prose. After that: using 0 mph readings as the stop anchor (real roads have many stopped cars, and then the cameras simply stay unaligned), clocks that drift during the incident (I assume a constant offset), DST and timezone changes, and CAD exports with event types my keyword list doesn't know.
+Claim extraction from free prose. Then: 0 mph readings as the stop anchor on busy roads, clocks that drift mid-incident (offsets are assumed constant), timezone and DST changes, and unfamiliar CAD event types.
 
 ## Tools used
-- Claude (Anthropic): [describe honestly how you used it, e.g. "generated the first draft of the code, tests and README; I reviewed and changed …"].
-- Python 3 standard library only. The optional `--llm` path (`plearun/llm.py`) only picks which of several already-valid rows to cite. Its reply is checked against `schema.json`, and it cannot change or add a finding.
+- Claude (Anthropic): [describe honestly how you used it, e.g. "generated the code, tests and README; I reviewed every rule and changed the date handling, the conflict margin and the closest-reading rule"].
+- The optional `--llm` path only picks which of several already-valid rows to cite. Its reply is checked against `schema.json`, and it can't change or add findings.
