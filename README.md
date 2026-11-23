@@ -25,5 +25,5 @@
 Claim extraction from free prose. Then: 0 mph readings as the stop anchor on busy roads, clocks that drift mid-incident (offsets are assumed constant), timezone and DST changes, and unfamiliar CAD event types.
 
 ## Tools used
-- Claude (Anthropic): [describe honestly how you used it, e.g. "generated the code, tests and README; I reviewed every rule and changed the date handling, the conflict margin and the closest-reading rule"].
+- Claude Code (Anthropic): generated the code, tests and this README from my instructions. I reviewed the rules step by step and changed three of them: how bare times get their date, the conflict threshold for times, and the clearly-closest camera reading rule. No other tools.
 - The optional `--llm` path only picks which of several already-valid rows to cite. Its reply is checked against `schema.json`, and it can't change or add findings.
