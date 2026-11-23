@@ -25,5 +25,6 @@
 Claim extraction from free prose. Then: 0 mph readings as the stop anchor on busy roads, clocks that drift mid-incident (offsets are assumed constant), timezone and DST changes, and unfamiliar CAD event types.
 
 ## Tools used
-- Claude Code (Anthropic): generated the code, tests and this README from my instructions. No other tools.
+- Claude Code (Anthropic): generated the code, tests and this README from my instructions.
+- VS Code: to open and review the files.
 - The optional `--llm` path only picks which of several already-valid rows to cite. Its reply is checked against `schema.json`, and it can't change or add findings.
