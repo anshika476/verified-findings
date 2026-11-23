@@ -142,6 +142,79 @@ class Camera(Case):
         self.assertEqual(len(out), 1)
 
 
+class ClosestReading(Case):
+    """Edge cases for "use the clearly closest camera reading".
+
+    Both cameras see the stop (0 mph), which the notes put at 21:16:00, so
+    CAM-07 runs 30 s fast and CAM-03 runs 60 s slow. Readings are given here in
+    *true* time and converted to each camera's own wrong clock."""
+    SKEW = {"CAM-07": +30, "CAM-03": -60}
+    CLAIM = "Officer Lee first observed the sedan at about 21:14, travelling {v} mph."
+
+    def check(self, readings, v=58, extra=""):
+        from datetime import datetime, timedelta
+        rows = ["timestamp,device,speed_mph,zone_mph",
+                "2026-03-02T21:16:30-05:00,CAM-07,0,45",   # stop on CAM-07's clock
+                "2026-03-02T21:15:00-05:00,CAM-03,0,45"]   # stop on CAM-03's clock
+        for cam, true_hms, speed in readings:
+            t = datetime.fromisoformat(f"2026-03-02T{true_hms}-05:00") + timedelta(seconds=self.SKEW[cam])
+            rows.append(f"{t.isoformat()},{cam},{speed},45")
+        self.write("camera_log.csv", "\r\n".join(rows) + "\r\n" + extra)
+        return self.statuses(self.run_report(self.CLAIM.format(v=v)))[0]
+
+    def test_sample_stays_not_settled(self):            # 62 vs 63 mph only ~78 s apart: not clear
+        with redirect_stderr(io.StringIO()):
+            out = plearun_cli.run(SAMPLE_REPORT, SAMPLE_RECORDS)["findings"]
+        self.assertEqual(out[0]["finding"], "not_settled")
+
+    def test_clearly_closest_same_camera_match(self):
+        # 20 s vs 120 s from 21:14 on one camera: shared clock error can't swap them
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 58), ("CAM-07", "21:12:00", 70)]), "match")
+
+    def test_clearly_closest_same_camera_conflict(self):
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 71), ("CAM-07", "21:12:00", 58)]), "conflict")
+
+    def test_clearly_closest_across_cameras(self):
+        # 0 s vs 130 s, but on different cameras each ±30 s: worst case 30 s vs 100 s -> clear
+        self.assertEqual(self.check([("CAM-07", "21:14:00", 58), ("CAM-03", "21:11:50", 70)]), "match")
+
+    def test_same_gap_across_cameras_is_not_clear(self):
+        # same 20 s vs 120 s as above, but on two cameras: worst case 50 s vs 90 s -> not clear
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 58), ("CAM-03", "21:12:00", 70)]), "not_settled")
+
+    def test_two_readings_close_together(self):
+        self.assertEqual(self.check([("CAM-07", "21:14:00", 58), ("CAM-03", "21:14:30", 70)]), "not_settled")
+
+    def test_same_instant_two_cameras(self):
+        self.assertEqual(self.check([("CAM-07", "21:14:00", 58), ("CAM-03", "21:14:00", 66)]), "not_settled")
+
+    def test_same_instant_both_agree(self):              # whichever it is, the speed is right
+        self.assertEqual(self.check([("CAM-07", "21:14:00", 58), ("CAM-03", "21:14:00", 58)]), "match")
+
+    def test_only_reading_at_window_edge(self):           # 110 s away ±30 s: may be outside "about"
+        self.assertEqual(self.check([("CAM-07", "21:15:50", 58)]), "not_settled")
+
+    def test_duplicate_row_does_not_compete(self):
+        dup = "1772504050000,CAM-07,58,45\r\n"              # 21:14:10 on CAM-07 = 21:13:40 true, same row again
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 58), ("CAM-07", "21:12:00", 70)], extra=dup), "match")
+
+    def test_far_decoy_with_right_speed_is_ignored(self):
+        self.assertEqual(self.check([("CAM-07", "21:05:00", 58), ("CAM-07", "21:14:00", 71)]), "conflict")
+
+    def test_busy_road(self):
+        cars = [("CAM-07", f"21:{12 + s // 60:02d}:{s % 60:02d}", 58 if s % 40 else 66) for s in range(0, 240, 20)]
+        self.assertEqual(self.check(cars), "not_settled")
+
+    def test_unaligned_camera_blocks_conflict(self):
+        stray = "2026-03-02T21:30:00-05:00,CAM-09,40,45\r\n"   # CAM-09 never shows the stop
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 71), ("CAM-07", "21:12:00", 58)], extra=stray),
+                         "not_settled")
+
+    def test_approximate_speed(self):
+        self.CLAIM = "Officer Lee first observed the sedan at about 21:14, travelling about {v} mph."
+        self.assertEqual(self.check([("CAM-07", "21:13:40", 62), ("CAM-07", "21:12:00", 75)], v=60), "match")
+
+
 class Hostile(Case):
     def test_instructions_in_records_are_ignored(self):
         self.write("notes_cp1252.csv",

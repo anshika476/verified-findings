@@ -7,6 +7,7 @@ Every comparison has a claim tolerance (tol) and an evidence uncertainty (u):
 A conflict also needs the evidence to be attributable: e.g. a camera speed
 only counts when exactly one reading could be the vehicle in question.
 """
+from collections import namedtuple
 from dataclasses import dataclass
 
 from .clocks import rss
@@ -20,6 +21,8 @@ CITE_ORDER = {
     "OBSERVE": ["notes", "transcript", "camera"],
 }
 ATOM_CITE_PRIORITY = ["speed", "relative", "count", "time", "zone"]
+CLOSEST_GAP = 60.0     # s: how much nearer the closest camera reading must be, worst case vs best case
+Seen = namedtuple("Seen", "rec inside d u rt")
 
 
 @dataclass
@@ -141,7 +144,8 @@ class Checker:
         return any(r.source == "camera" and r.clock not in self.tl.offset for r in self.recs)
 
     def _window(self, claim):
-        """Readings that could fall in the claim's time window: [(rec, robustly_inside, |d|)]."""
+        """Readings that could fall in the claim's time window, as Seen(rec, inside, d, u):
+        d = distance from the claimed time, u = its uncertainty, inside = inside even at worst."""
         times = [x for x in claim.atoms if x.type == "time"]
         cams = [r for r in self.recs if r.source == "camera" and r.speed is not None
                 and self.tl.ref_time(r) is not None]
@@ -152,24 +156,52 @@ class Checker:
                 seen.add(key)
                 uniq.append(r)
         if not times:
-            return [(r, True, 0.0) for r in uniq]
+            return [Seen(r, True, 0.0, 0.0, 0.0) for r in uniq], None   # no time: every reading is a candidate
         a = next((x for x in times if x.kind == "OBSERVE"), times[0])
         t = self.claim_time(a.value)
         if t is None:
-            return []                                             # no usable window: nothing attributable
+            return [], None                                       # no usable window: nothing attributable
         tol = TIME_TOL["approx" if a.approx else "exact"]
         out = []
         for r in uniq:
             rt, u = self.tl.ref_time(r)
             d = abs(rt - t)
             if d - u <= tol:
-                out.append((r, d + u <= tol, d))
-        return out
+                out.append(Seen(r, d + u <= tol, d, u, rt))
+        return out, t
+
+    def _lead(self, best, runner, t):
+        """How much nearer `best` is to the claimed time than `runner`, in the worst case."""
+        if best.rec.clock != runner.rec.clock:                    # independent clock errors
+            return (runner.d - runner.u) - (best.d + best.u)
+        # Same camera: both readings share one clock error e in [-U, U], so check
+        # the worst e (the extremes, or where either reading crosses the claimed time).
+        U = self.tl.offset[best.rec.clock][1]
+        es = [e for e in (-U, U, t - best.rt, t - runner.rt) if -U <= e <= U]
+        worst = min(abs(runner.rt + e - t) - abs(best.rt + e - t) for e in es)
+        return worst - rss(best.rec.unc, runner.rec.unc)
+
+    def _attributable(self, win, t):
+        """The one reading we may treat as the vehicle, or None.
+
+        Either it is the only reading in the window, or it is clearly the closest:
+        even in the worst case it is CLOSEST_GAP seconds nearer the claimed time than
+        the runner-up. Either way it must be inside the window even at its worst."""
+        if not win or t is None:
+            return None
+        ranked = sorted(win, key=lambda w: w.d)
+        best = ranked[0]
+        if not best.inside:
+            return None
+        if len(ranked) == 1:
+            return best
+        return best if self._lead(best, ranked[1], t) >= CLOSEST_GAP else None
 
     def speed(self, a, claim):
         if not any(r.source == "camera" for r in self.recs):
             return Result("none", note="no camera records")
-        win = [w for w in self._window(claim) if w[0].speed > 0]
+        seen, t = self._window(claim)
+        win = [w for w in seen if w.rec.speed > 0]
         if not win:
             return Result("unsettled", note="no aligned moving reading in the time window")
         m_tol, c_tol = SPEED_TOL["approx" if a.approx else "exact"]
@@ -182,30 +214,32 @@ class Checker:
                 return "in" if diff <= m_tol else ("out" if diff > c_tol else "?")
             return "in" if abs(diff) <= m_tol else ("out" if abs(diff) >= c_tol else "?")
 
-        verdicts = [(verdict(r.speed), r, robust, d) for r, robust, d in win]
-        if len(win) == 1 and win[0][1]:
-            v, r, _, _ = verdicts[0]
-            status = {"in": "match", "out": "conflict"}.get(v, "unsettled")
+        pick = self._attributable(win, t)
+        if pick:
+            r = pick.rec
+            how = "only reading in window" if len(win) == 1 else f"clearly closest of {len(win)} readings"
+            status = {"in": "match", "out": "conflict"}.get(verdict(r.speed), "unsettled")
             if status == "conflict" and self._unplaced_camera():
-                return Result("unsettled", note="single aligned reading disagrees, but another camera is unaligned")
-            return Result(status, r, f"single reading in window: {r.speed:g} mph")
-        if all(v == "in" for v, *_ in verdicts):
-            return Result("match", min(verdicts, key=lambda x: x[3])[1], "every reading in window agrees")
+                return Result("unsettled", note=f"{how} disagrees ({r.speed:g} mph), but another camera is unaligned")
+            return Result(status, r, f"{how}: {r.speed:g} mph")
+        if any(w.inside for w in win) and all(verdict(w.rec.speed) == "in" for w in win):
+            return Result("match", min(win, key=lambda w: w.d).rec, "every reading in window agrees")
         return Result("unsettled", note=f"{len(win)} readings in window "
-                      f"({', '.join(f'{r.speed:g}' for r, *_ in win)} mph); cannot tell which is the vehicle")
+                      f"({', '.join(f'{w.rec.speed:g}' for w in win)} mph), none clearly closest; cannot tell which is the vehicle")
 
     def zone(self, a, claim):
         if not any(r.source == "camera" for r in self.recs):
             return Result("none", note="no camera records")
-        win = [w for w in self._window(claim) if w[0].zone is not None]
+        seen, t = self._window(claim)
+        win = [w for w in seen if w.rec.zone is not None]
         if not win:
             return Result("unsettled", note="no aligned reading in window")
-        zones = {r.zone for r, *_ in win}
-        nearest = min(win, key=lambda w: w[2])[0]
-        if zones == {a.value}:
-            return Result("match", nearest, f"all {len(win)} readings in window show {a.value:g}")
-        if len(win) == 1 and win[0][1] and abs(nearest.zone - a.value) >= 5 and not self._unplaced_camera():
-            return Result("conflict", nearest, f"reading shows zone {nearest.zone:g}")
+        zones = {w.rec.zone for w in win}
+        if zones == {a.value} and any(w.inside for w in win):
+            return Result("match", min(win, key=lambda w: w.d).rec, f"all {len(win)} readings in window show {a.value:g}")
+        pick = self._attributable(win, t)
+        if pick and abs(pick.rec.zone - a.value) >= 5 and not self._unplaced_camera():
+            return Result("conflict", pick.rec, f"reading shows zone {pick.rec.zone:g}")
         return Result("unsettled", note=f"zones in window: {sorted(zones)}")
 
     def count(self, a):

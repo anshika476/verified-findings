@@ -1,6 +1,6 @@
 # Verified Findings
 
-`python3 plearun_cli.py REPORT RECORDS_DIR > findings.json` (add `--explain` to see offsets and reasoning on stderr). `make test` runs 29 offline tests. Standard library only, no network.
+`python3 plearun_cli.py REPORT RECORDS_DIR > findings.json` (add `--explain` to see offsets and reasoning on stderr). `make test` runs 43 offline tests. Standard library only, no network.
 
 ## How it works
 1. **Load** (`plearun/records.py`) every `.csv/.json/.vtt` in the folder. Text is decoded as UTF-8 (BOM stripped), then Windows-1252, then Latin-1. `#` marker lines are skipped. Each row keeps its exact raw text. Row numbers: the CSV data row (after the header), the position in the JSON event list (D-1001 = 1), the VTT cue number.
@@ -13,7 +13,7 @@
 **Sample offsets** (relative to the notes): dispatch +41 s, CAM-03 +42 s, CAM-07 −48 s, transcript cue 0 ≈ 21:15:26. With these, the 911 call lands on 21:11:00 and the unit arrives exactly 2:00 after the stop.
 
 ## Three hardest decisions
-1. **The 58 mph claim is `not_settled`.** CAM-07 has a 58 reading, but at about 21:06 after alignment, which is the wrong vehicle. Near 21:14 there are four moving readings (61–63 mph and 31 mph) on two cameras. The cameras don't identify vehicles, so I don't know which reading is the sedan. Calling this a conflict at 62 mph would be the "confident wrong conflict" the brief warns about. So a speed can only match or conflict when exactly one reading could be the vehicle.
+1. **Which camera reading is the sedan, and why the 58 mph claim is `not_settled`.** The cameras don't identify vehicles. A reading is treated as the sedan only if it is the only moving reading in the time window, or if it is *clearly* the closest: even in the worst case of clock error, it is at least 60 s nearer the claimed time than the next reading. Two readings on the same camera share one clock error, so their order is exact and that case is checked separately. In the sample, CAM-07's 58 mph reading is at about 21:06, so it's the wrong car. Near 21:14 the closest reading is 62 mph, but a 63 mph reading on the other camera is only about 78 s further away, which isn't clear once ±30 s per camera is allowed. Calling a conflict at 62 mph would risk the "confident wrong conflict" the brief warns about. The edge cases are tested (`ClosestReading` in the tests): busy roads, same-instant readings, duplicates, far decoys, readings at the window edge and unaligned cameras.
 2. **What counts as reliably aligned.** For an absolute clock I accept one unambiguous anchor, since the brief allows estimating from shared events. Every offset carries an uncertainty, and decisions must hold across that uncertainty. I also refuse a conflict when an unaligned source holds the same event, because evidence I couldn't place might support the claim.
 3. **Citation conventions.** For JSON the "row" is the event's position in the list, and the quote is the exact `"logged": …` text from that event's source span. Duplicate JSON keys are detected and that value is ignored.
 
