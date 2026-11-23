@@ -19,13 +19,16 @@ def run(report_path, records_dir, explain=False, use_llm=False):
 
     day, claim_list = claims_mod.parse_report(records.read_text(report_path))
     recs = records.load_dir(records_dir, warn)
-    tz, day, near = clocks.resolve_times(recs, day, warn)
+    tz, day = clocks.resolve_times(recs, day, warn)
     timeline = clocks.Timeline(recs, log, tz)
     timeline.align()
 
     def claim_time(seconds_of_day):
+        """Report times are placed on the incident date; unknown date -> None (not settled)."""
+        if day is None:
+            return None
         h, rem = divmod(int(seconds_of_day), 3600)
-        return timeutil.resolve(("tod", (h, rem // 60, rem % 60), 0), tz, day, near)
+        return timeutil.resolve(("tod", (h, rem // 60, rem % 60), 0), tz, day)
 
     provider = None
     if use_llm:

@@ -186,6 +186,40 @@ class Hostile(Case):
         self.assertEqual(recs[0].kind, "STOP")
 
 
+class BareTimeDates(Case):
+    """A bare "21:15" takes its date from the dated rows above and below it."""
+    def resolve(self, camera_rows, report_date=timeutil.parse_date("2026-03-02")):
+        from plearun import clocks
+        self.write("camera_log.csv", "timestamp,device,speed_mph,zone_mph\r\n" + camera_rows)
+        recs = records.load_dir(self.rec, lambda m: None)
+        clocks.resolve_times(recs, report_date, lambda m: None)
+        return [r for r in recs if r.file == "camera_log.csv"]
+
+    def test_takes_neighbours_date(self):
+        rows = self.resolve("2026-03-05T21:14:00-05:00,CAM-07,40,45\r\n"
+                            "21:15:00,CAM-07,41,45\r\n"
+                            "2026-03-05T21:16:00-05:00,CAM-07,42,45\r\n")
+        self.assertEqual(rows[1].t - rows[0].t, 60)      # 5 March, not the report's 2 March
+
+    def test_midnight_between_neighbours_is_unusable(self):
+        rows = self.resolve("2026-03-02T23:59:00-05:00,CAM-07,40,45\r\n"
+                            "23:59:30,CAM-07,41,45\r\n"
+                            "2026-03-03T00:01:00-05:00,CAM-07,42,45\r\n")
+        self.assertIsNone(rows[1].t)
+
+    def test_no_dated_neighbours_uses_incident_date(self):
+        notes = [r for r in records.load_dir(self.rec, lambda m: None) if r.source == "notes"]
+        from plearun import clocks
+        clocks.resolve_times(notes, timeutil.parse_date("2026-03-02"), lambda m: None)
+        self.assertTrue(all(r.t is not None for r in notes))
+
+    def test_unknown_incident_date_is_unusable(self):
+        notes = [r for r in records.load_dir(self.rec, lambda m: None) if r.source == "notes"]
+        from plearun import clocks
+        clocks.resolve_times(notes, None, lambda m: None)   # no report date, no dated rows
+        self.assertTrue(all(r.t is None for r in notes))
+
+
 class Times(unittest.TestCase):
     def test_formats(self):
         self.assertEqual(timeutil.classify(1772504040000)[0:2], ("epoch", 1772504040.0))

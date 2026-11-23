@@ -11,9 +11,8 @@ anchor, when its anchors disagree, or when the offset is implausible.
 The report is never used to estimate offsets: that would be circular.
 """
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
-from statistics import median
 
 from . import timeutil
 
@@ -36,22 +35,53 @@ def resolve_times(recs, report_date, warn):
     for r in recs:
         if r.ts and r.ts[0] != "cue":
             per_file[r.file].append(r.ts)
-    absolute = [timeutil.resolve(c, timezone.utc, None) for c in classified if c[0] in ("epoch", "aware")]
-    near = median(absolute) if absolute else None
     tz = timezone(global_off) if global_off is not None else timezone.utc
-    day = report_date or (datetime.fromtimestamp(near, tz).date() if near else None)
     file_tz = {}                                            # naive values follow their own file first
     for f, cs in per_file.items():
         own = timeutil.dominant_offset(cs)
         file_tz[f] = timezone(own) if own is not None else tz
+
+    # Pass 1: rows that carry their own date.
     for r in recs:
-        if not r.ts or r.ts[0] == "cue":
-            continue
-        ftz = file_tz[r.file]
-        if r.ts[0] == "tod" and day is None:
-            continue
-        r.t = timeutil.resolve(r.ts, ftz, day, near)
-    return tz, day, near
+        if r.ts and r.ts[0] in ("epoch", "aware", "naive"):
+            r.t = timeutil.resolve(r.ts, file_tz[r.file], None)
+    day_of = lambda r: datetime.fromtimestamp(r.t, file_tz[r.file]).date()
+    dated_days = {day_of(r) for r in recs if r.t is not None and not r.relative}
+    # Incident date: the report's, else the one date all dated records share, else unknown.
+    day = report_date or (next(iter(dated_days)) if len(dated_days) == 1 else None)
+
+    # Pass 2: bare times ("21:15") take their date from the dated rows just above
+    # and below them in the same file. If those two disagree (midnight in between)
+    # the time is left unusable rather than guessed. No dated neighbours at all:
+    # use the incident date, if known.
+    by_file = defaultdict(list)
+    for r in recs:
+        by_file[r.file].append(r)
+    unusable = 0
+    for rows in by_file.values():
+        prev, before = None, []
+        for r in rows:                                      # nearest dated row above
+            before.append(prev)
+            if r.ts and r.ts[0] != "tod" and r.t is not None:
+                prev = r
+        nxt, after = None, []
+        for r in reversed(rows):                            # nearest dated row below
+            after.append(nxt)
+            if r.ts and r.ts[0] != "tod" and r.t is not None:
+                nxt = r
+        after.reverse()
+        for r, up, down in zip(rows, before, after):
+            if not r.ts or r.ts[0] != "tod":
+                continue
+            days = {day_of(x) for x in (up, down) if x is not None}
+            use = days.pop() if len(days) == 1 else (day if not days else None)
+            if use is None:
+                unusable += 1
+                continue
+            r.t = timeutil.resolve(r.ts, file_tz[r.file], use)
+    if unusable:
+        warn(f"{unusable} time-only value(s) left unused: their date is unclear")
+    return tz, day
 
 
 # ---------------------------------------------------------------- step 2

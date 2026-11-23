@@ -95,6 +95,8 @@ class Checker:
             return Result("unsettled" if self.exists(a.kind) else "none",
                           note=f"no aligned {a.kind} record")
         t = self.claim_time(a.value)
+        if t is None:
+            return Result("unsettled", note="incident date unknown")
         tol = TIME_TOL["seconds" if a.has_seconds else "approx" if a.approx else "exact"]
         per = {c: [(self._judge(self.tl.ref_time(r)[0] - t, self.tl.ref_time(r)[1], tol, TIME_MARGIN, a.bound), r)
                    for r in reps] for c, reps in groups.items()}
@@ -153,6 +155,8 @@ class Checker:
             return [(r, True, 0.0) for r in uniq]
         a = next((x for x in times if x.kind == "OBSERVE"), times[0])
         t = self.claim_time(a.value)
+        if t is None:
+            return []                                             # no usable window: nothing attributable
         tol = TIME_TOL["approx" if a.approx else "exact"]
         out = []
         for r in uniq:

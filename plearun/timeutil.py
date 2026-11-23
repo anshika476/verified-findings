@@ -8,7 +8,7 @@ date are known. Every result carries an uncertainty in seconds (its precision).
 """
 import re
 from collections import Counter
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 
 TOD_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$")
 EPOCH_RE = re.compile(r"^\s*\d{9,13}(?:\.\d+)?\s*$")
@@ -65,13 +65,11 @@ def dominant_offset(classified):
     return offs.most_common(1)[0][0] if offs else None
 
 
-def resolve(c, tz, day, near=None):
+def resolve(c, tz, day):
     """Epoch seconds for a classified value.
 
-    tz:   default timezone for naive values and times of day.
-    day:  incident date for times of day.
-    near: epoch seconds the value should be close to; a time of day is put on
-          day-1, day or day+1, whichever is closest (handles midnight).
+    tz:  default timezone for naive values and times of day.
+    day: the date a time of day belongs to (chosen by the caller).
     """
     style, payload, _ = c
     if style == "epoch":
@@ -81,11 +79,7 @@ def resolve(c, tz, day, near=None):
     if style == "naive":
         return payload.replace(tzinfo=tz).timestamp()
     h, mi, sec = payload
-    options = [datetime.combine(day + timedelta(days=k), time(h, mi, sec), tz).timestamp()
-               for k in (-1, 0, 1)]
-    if near is None:
-        return options[1]
-    return min(options, key=lambda t: abs(t - near))
+    return datetime.combine(day, time(h, mi, sec), tz).timestamp()
 
 
 def fmt(t, tz):
